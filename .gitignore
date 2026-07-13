@@ -1,0 +1,13 @@
+# Session data — NEVER commit; may contain real book entries
+tally-session/
+_outbox/
+_cache/
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
