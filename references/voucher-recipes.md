@@ -42,10 +42,39 @@ the Accounting Voucher View that `ledger.py build` produces. Requirements (quirk
   purchase ledger.
 
 Putting the party in `ALLLEDGERENTRIES.LIST` on a stock invoice returns `EXCEPTIONS=1` with **no LINEERROR**
-— a silent rejection. If the user needs item invoices, build the XML by hand from the tally-integration repo's
-`sample/seed_practice_data.py` (which posts real GST invoices) and post with curl the same way; log the result
-to the trail afterward. For plain **accounting** Sales/Purchase (party + amount, no inventory), the normal
+— a silent rejection. For plain **accounting** Sales/Purchase (party + amount, no inventory), the normal
 `ledger.py build` shape works fine — set `--vtype Sales`/`Purchase`.
+
+### Working item-invoice XML (verified shape — adapt names/amounts, curl it, log it to the trail)
+A GST purchase: 100 × Widget A @ ₹100 = ₹10,000 + ₹900 CGST + ₹900 SGST, party ₹11,800. Note the signs:
+this is a Purchase, so goods + input GST are Dr (negative), party is Cr (positive) — flip all of them for a
+Sales invoice. **RATE rule:** supply `rate = amount ÷ qty` AND the exact `<AMOUNT>` — amount+qty alone leaves
+the rate blank (Tally does not back-calculate on import).
+```xml
+<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>
+ <REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME>
+  <STATICVARIABLES><SVCURRENTCOMPANY>COMPANY</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC>
+ <REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF">
+  <VOUCHER REMOTEID="TV-PUR-20260301-001" VCHTYPE="Purchase" ACTION="Create" OBJVIEW="Invoice Voucher View">
+   <DATE>20260301</DATE><VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
+   <PARTYLEDGERNAME>Vendor XYZ</PARTYLEDGERNAME><ISINVOICE>Yes</ISINVOICE>
+   <NARRATION>Goods bought with GST - Vendor XYZ</NARRATION>
+   <ALLINVENTORYENTRIES.LIST>
+    <STOCKITEMNAME>Widget A</STOCKITEMNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+    <RATE>100/Nos</RATE><AMOUNT>-10000</AMOUNT><ACTUALQTY>100 Nos</ACTUALQTY><BILLEDQTY>100 Nos</BILLEDQTY>
+    <BATCHALLOCATIONS.LIST><GODOWNNAME>Main Location</GODOWNNAME><BATCHNAME>Primary Batch</BATCHNAME>
+     <ACTUALQTY>100 Nos</ACTUALQTY><BILLEDQTY>100 Nos</BILLEDQTY><AMOUNT>-10000</AMOUNT></BATCHALLOCATIONS.LIST>
+    <ACCOUNTINGALLOCATIONS.LIST><LEDGERNAME>Purchases</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+     <AMOUNT>-10000</AMOUNT></ACCOUNTINGALLOCATIONS.LIST>
+   </ALLINVENTORYENTRIES.LIST>
+   <LEDGERENTRIES.LIST><LEDGERNAME>Vendor XYZ</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>11800</AMOUNT></LEDGERENTRIES.LIST>
+   <LEDGERENTRIES.LIST><LEDGERNAME>Input CGST</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-900</AMOUNT></LEDGERENTRIES.LIST>
+   <LEDGERENTRIES.LIST><LEDGERNAME>Input SGST</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-900</AMOUNT></LEDGERENTRIES.LIST>
+  </VOUCHER>
+ </TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>
+```
+GST/TDS here are explicit ledger amounts (portable across Tally versions), not the auto-computation engine.
+After posting, log it: `ledger.py log --action post --remoteid ... --response-file ...` like any voucher.
 
 ## The raw Payment XML (what `ledger.py build` produces — for reference/debugging)
 ```xml

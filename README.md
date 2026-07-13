@@ -87,6 +87,12 @@ Copy any of these, change the numbers:
 > what did I post today?
 > show me everything in this session
 > how much did we spend on conveyance this year?
+> give me the HDFC ledger for the year with a running balance
+
+**Reconcile things**
+> reconcile HDFC against this bank statement — show me only the dates that don't match
+> compare my TDS ledgers to this 26AS
+> enter whatever's missing from this statement (it gap-analyses first, shows you the batch, one yes posts it)
 
 Every "enter/fix/delete" gets you a one-line preview and a *"Post? (yes/no)"*. Every question just gets
 answered.
@@ -137,9 +143,18 @@ More depth for technical readers: [`references/troubleshooting.md`](references/t
 ## For the technically curious
 
 - **Architecture:** the AI builds one small XML file per action and `curl`s it to Tally's documented HTTP-XML
-  gateway. A ~300-line Python helper ([`scripts/ledger.py`](scripts/ledger.py)) builds the XML (it owns the
-  notorious Dr/Cr sign convention), fuzzy-matches ledger names (difflib), and keeps the JSON/Excel trail. The
-  helper never talks to Tally — every byte that reaches your books went through a visible curl call.
+  gateway. A Python helper ([`scripts/ledger.py`](scripts/ledger.py)) builds the XML (it owns the
+  notorious Dr/Cr sign convention), fuzzy-matches ledger names (difflib), keeps the JSON/Excel trail, and
+  turns a reviewed batch sheet into per-voucher XMLs (`sheet`). The helper never talks to Tally — every byte
+  that reaches your books went through a visible curl call.
+- **Reporting:** [`scripts/tally_report.py`](scripts/tally_report.py) (read-only, stdlib-only) pulls the
+  Voucher Register for a date range once into a local SQLite cache, then answers trial balance, P&L, ledger
+  statements with running balance, bank reconciliation by net daily movement, TDS-vs-26AS, and ad-hoc SQL —
+  instantly, and without the balance-computation reads that can hang Tally's single-threaded gateway.
+  (Adapted from tally-integration's `tally_report.py`.)
+- **Per-company conventions:** an optional `<company>__conventions.md` next to the trail records the owner's
+  narration style, verbatim ledger map and recurring posting recipes, so entries come out indistinguishable
+  from the owner's ([template](references/conventions-template.md)).
 - **Idempotency:** every voucher carries an externally-set `REMOTEID`; re-posting the same ID alters in place,
   and deletes address the same ID. See [`references/gateway-reference.md`](references/gateway-reference.md)
   for the protocol details, response schema and official sources.

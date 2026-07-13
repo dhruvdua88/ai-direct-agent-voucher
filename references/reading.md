@@ -57,6 +57,6 @@ Use `references/list-companies.xml`. This is the preflight connectivity check.
 Do **not** fetch closing balances for **all** ledgers at once on a real multi-year book — the gateway is
 effectively single-threaded, so Tally replays all history to compute them and the whole instance freezes
 (looks like a crash) while every other request queues behind it. Scope to one ledger/group (`<CHILDOF>` /
-narrow `<FETCH>`), read it in the UI, or use the tally-integration repo's cached `scripts/tally_report.py`
+narrow `<FETCH>`), read it in the UI, or use this skill's cached `scripts/tally_report.py`
 (pulls a range once into SQLite, then answers as SQL). A hung *read* is safe to force-kill — reads never
 corrupt data; allow Tally's routine repair on reopen.

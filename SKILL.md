@@ -79,7 +79,9 @@ Vouchers reference ledgers; ledgers are sacred. Before using ANY ledger name in 
 
 ```bash
 export TALLY_SESSION_DIR="$PWD/tally-session"
-LEDGER=~/.claude/skills/ai-direct-agent-voucher/scripts/ledger.py
+SKILL=~/.claude/skills/ai-direct-agent-voucher
+LEDGER="$SKILL/scripts/ledger.py"
+REPORT="$SKILL/scripts/tally_report.py"
 # gateway up? which companies? (safe; works with no company loaded)
 curl.exe -s -m 5 -X POST -H "Content-Type: text/xml" \
   --data-binary @"$SKILL/references/list-companies.xml" http://localhost:9000
@@ -88,6 +90,9 @@ curl.exe -s -m 5 -X POST -H "Content-Type: text/xml" \
   Connectivity → acts as **Both**, Port **9000**. Stop until it responds.
 - Note the exact company name; use it **verbatim** (`COMPANY="..."`) in every request. Multiple companies →
   confirm which, once. Then fetch the ledger chart into the cache (Rule 3.1).
+- If `$TALLY_SESSION_DIR/<company>__conventions.md` exists, read it and follow it — it holds this company's
+  verbatim ledger map, the owner's narration style, and posting recipes (template:
+  `references/conventions-template.md`). Absent → proceed normally; offer to draft one only if asked.
 
 ## POST a voucher
 
@@ -115,8 +120,11 @@ curl.exe -s -m 5 -X POST -H "Content-Type: text/xml" \
 6. Success = `CREATED`/`ALTERED` ≥ 1, `EXCEPTIONS=0`, `ERRORS=0` (the `log` line prints it). Fail →
    `references/troubleshooting.md`, fix, retry the SAME remoteid.
 
-**Batches** (bank statement / Excel): loop the same steps per voucher after ONE consolidated review table and
-ONE confirmation for the whole batch; or use the tally-integration repo's `import_sheet.py` (dry-run → `--post`).
+**Batches** (bank statement / Excel / PDF): `references/batch-and-recon.md`. In short: gap-analyse first
+(**by net daily movement** — owners consolidate same-day entries; line-by-line matching double-counts), draft
+a review sheet, ONE confirmation for the whole batch, `python "$LEDGER" sheet --company "$COMPANY" --file
+reviewed.csv` (validates + dedupes + builds all XMLs, never posts), then curl each ~0.5 s apart with retry on
+transient failures. From a PDF, prove the extraction against the running balance before anything is drafted.
 
 ## AMEND a voucher
 
@@ -136,8 +144,17 @@ ONE confirmation for the whole batch; or use the tally-integration repo's `impor
 
 - **"What did I post / show the trail"** → `python "$LEDGER" list --company "$COMPANY"` (`--session current`
   for this session) or `sessions` for the JSON audit. Point at the Excel for a clean record.
-- **Trial balance / P&L** → report export (`references/reading.md`); ledger-wise: add `<EXPLODEFLAG>Yes</EXPLODEFLAG>`.
-- **Transactions in a range** → `Voucher Register` export (re-filter dates yourself; the filter is flaky).
+- **Anything about the book's contents** (trial balance, P&L, a ledger's statement with running balance,
+  voucher summaries, bank recon, TDS vs 26AS, ad-hoc questions) → the cached reporter: one safe Voucher
+  Register pull into SQLite, then instant SQL — no repeat hits on the gateway:
+  ```bash
+  python "$REPORT" --company "$COMPANY" --from 20250401 --to 20260331 --report trial-balance
+  python "$REPORT" ... --report ledger --arg "HDFC Bank"     # statement + running balance
+  python "$REPORT" ... --sql "SELECT ..."                    # ad-hoc; --list shows all reports
+  ```
+  Add `--refresh` after posting so answers include the new vouchers; `--out x.xlsx` for a file.
+- **One-off raw exports** (or if Python is unavailable) → `references/reading.md` XML recipes; ledger-wise
+  trial balance: add `<EXPLODEFLAG>Yes</EXPLODEFLAG>`. Re-filter Voucher Register dates yourself (flaky).
 - **⚠️ Never** run TDL collections over Ledger objects or fetch all-ledger closing balances live — both can
   hang the gateway (single-threaded). The masters export + trial balance cover every need safely. A hung READ
   is safe to kill; reads never corrupt data.
@@ -152,9 +169,13 @@ ONE confirmation for the whole batch; or use the tally-integration repo's `impor
 
 ## Reference files (read on demand)
 
-- `references/voucher-recipes.md` — Dr/Cr per type; ledger mapping; GST/item invoices (Invoice Voucher View).
-- `references/reading.md` — safe reads: trial balance, voucher register, masters export, list companies.
-- `references/troubleshooting.md` — failure modes → fixes (Educational-mode trap, EXCEPTIONS=1, hang recovery).
+- `references/voucher-recipes.md` — Dr/Cr per type; ledger mapping; GST/item invoices (full working XML).
+- `references/batch-and-recon.md` — review-sheet batches, pacing/retry/jam recovery, gap analysis by net
+  daily movement, proving a PDF extraction, end-of-batch reconciliation.
+- `references/reading.md` — safe raw reads: trial balance, voucher register, masters export, list companies.
+- `references/troubleshooting.md` — failure modes → fixes (Educational-mode trap, EXCEPTIONS=1, jam/hang recovery).
 - `references/masters.md` — create ledger/stock item (after the guard's yes).
+- `references/conventions-template.md` — per-company conventions file (narration style, ledger map, recipes).
 - `references/gateway-reference.md` — protocol, response schema, REMOTEID semantics, official sources.
-- `scripts/ledger.py` — trail + XML builder + fuzzy match (`python ledger.py -h`).
+- `scripts/ledger.py` — trail + XML builder + fuzzy match + `sheet` batch builder (`python ledger.py -h`).
+- `scripts/tally_report.py` — cached SQL reporting, read-only (`--list` for reports; stdlib-only).

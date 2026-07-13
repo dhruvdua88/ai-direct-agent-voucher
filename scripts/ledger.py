@@ -15,6 +15,9 @@ Subcommands
             (feed it the curl'd LedgerList XML) -> EXACT / CLOSE candidates / NONE
   build     write a ready-to-curl Create/Alter voucher XML; prints its path
   build-del write a ready-to-curl Delete XML for an existing REMOTEID
+  sheet     batch: read a reviewed CSV/XLSX (one row per LEG: remoteid,date,vtype,ledger,drcr,
+            amount,narration), validate + dedupe against the trail, and build one ready-to-curl
+            XML per voucher into the outbox. Prints a preview table; nothing is posted.
   log       record an action after curl (parses Tally's XML response for created/altered/deleted/exceptions);
             works for vouchers AND masters (--action create-ledger, vtype/date optional)
   list      print the trail (optionally --session current)
@@ -210,6 +213,83 @@ def cmd_build_del(a):
     xml = build_delete_xml(a.company, a.remoteid, a.vtype, a.date)
     print(_write_xml(a.company, a.remoteid + "-DEL", xml))
 
+def _norm_date(s):
+    s = str(s).strip()
+    if re.fullmatch(r"\d{8}", s):
+        return s
+    m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})$", s)          # DD-MM-YYYY
+    if m:
+        return f"{m.group(3)}{int(m.group(2)):02d}{int(m.group(1)):02d}"
+    m = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", s)          # YYYY-MM-DD
+    if m:
+        return f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+    raise SystemExit(f"unrecognised date {s!r} (use DD-MM-YYYY / YYYY-MM-DD / YYYYMMDD)")
+
+def cmd_sheet(a):
+    """Reviewed sheet -> validated, deduped, ready-to-curl XMLs (one per voucher). Never posts.
+    Schema (one row per ledger LEG; rows sharing a remoteid = one voucher):
+      remoteid | date | vtype | ledger | drcr | amount | narration"""
+    import csv as _csv
+    path = a.file
+    if path.lower().endswith((".xlsx", ".xlsm")):
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb[a.sheet] if a.sheet else wb.active
+        grid = [[c.value for c in r] for r in ws.iter_rows()]
+    else:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            grid = list(_csv.reader(f))
+    grid = [r for r in grid if any(str(c).strip() for c in r if c is not None)]
+    if not grid:
+        sys.exit("empty sheet")
+    hdr = [str(h).strip().lower() for h in grid[0]]
+    missing = [c for c in ("remoteid", "date", "vtype", "ledger", "drcr", "amount") if c not in hdr]
+    if missing:
+        sys.exit(f"sheet is missing required column(s): {missing}; has {hdr}")
+    rows = [{hdr[i]: (row[i] if i < len(row) else None) for i in range(len(hdr))} for row in grid[1:]]
+    order, by_id = [], {}
+    for r in rows:
+        rid = str(r["remoteid"]).strip()
+        if rid not in by_id:
+            by_id[rid] = {"remoteid": rid, "date": None, "vtype": None, "narration": "", "legs": []}
+            order.append(rid)
+        v = by_id[rid]
+        v["date"] = v["date"] or _norm_date(r["date"])
+        v["vtype"] = v["vtype"] or str(r["vtype"]).strip()
+        if not v["narration"] and r.get("narration"):
+            v["narration"] = str(r["narration"]).strip()
+        dc = "Dr" if str(r["drcr"]).strip().lower().startswith("d") else "Cr"
+        v["legs"].append((str(r["ledger"]).strip(), dc, abs(float(str(r["amount"]).replace(",", "").strip()))))
+    recs = _load(a.company)
+    posted_hashes = {r["hash"]: r["remoteid"] for r in recs
+                     if r.get("hash") and r.get("action") in ("post", "alter") and r.get("status") == "ok"}
+    n_bad = n_dup = 0
+    files = []
+    for rid in order:
+        v = by_id[rid]
+        ok, dr, cr = _balanced(v["legs"])
+        h = _legs_hash(v["date"], v["vtype"], v["legs"])
+        legs = " / ".join(f"{dc} {l} {amt:,.2f}" for l, dc, amt in v["legs"])
+        if not ok:
+            n_bad += 1
+            print(f"  [UNBALANCED Dr {dr:.2f} != Cr {cr:.2f}] {rid:26} {v['date']} {v['vtype']:8} | {legs}")
+            continue
+        if h in posted_hashes:
+            n_dup += 1
+            print(f"  [DUPLICATE of {posted_hashes[h]}] {rid:26} {v['date']} {v['vtype']:8} | {legs} -- skipped")
+            continue
+        xml = build_voucher_xml(a.company, rid, v["vtype"], v["date"], v["narration"], v["legs"])
+        p = _write_xml(a.company, rid, xml)
+        files.append(p)
+        print(f"  [OK] {rid:26} {v['date']} {v['vtype']:8} | {legs}")
+    print(f"\n{len(order)} vouchers in sheet: {len(files)} built, {n_dup} duplicate(s) skipped, {n_bad} unbalanced.")
+    if n_bad:
+        print("Fix the unbalanced voucher(s) and re-run before posting anything.")
+    if files:
+        print("Built XMLs (curl each, ~0.5s apart; log each response):")
+        for p in files:
+            print(f"  {p}")
+
 def _extract(resp_text):
     g = lambda tag: int((re.search(fr"<{tag}>(\d+)", resp_text) or [0, 0])[1])
     le = re.search(r"<LINEERROR>(.*?)</LINEERROR>", resp_text or "", re.S)
@@ -308,6 +388,7 @@ def main():
     p = sub.add_parser("match"); p.add_argument("--company", required=True); p.add_argument("--name", required=True); p.add_argument("--ledgers-xml", dest="ledgers_xml", required=True); p.set_defaults(fn=cmd_match)
     p = sub.add_parser("build"); p.add_argument("--company", required=True); p.add_argument("--remoteid", required=True); p.add_argument("--vtype", required=True); p.add_argument("--date", required=True); p.add_argument("--narration"); p.add_argument("--legs", required=True); p.add_argument("--action", default="Create"); p.set_defaults(fn=cmd_build)
     p = sub.add_parser("build-del"); p.add_argument("--company", required=True); p.add_argument("--remoteid", required=True); p.add_argument("--vtype", required=True); p.add_argument("--date", required=True); p.set_defaults(fn=cmd_build_del)
+    p = sub.add_parser("sheet"); p.add_argument("--company", required=True); p.add_argument("--file", required=True); p.add_argument("--sheet"); p.set_defaults(fn=cmd_sheet)
     p = sub.add_parser("log"); p.add_argument("--company", required=True); p.add_argument("--action", required=True); p.add_argument("--remoteid", required=True); p.add_argument("--vtype"); p.add_argument("--date"); p.add_argument("--narration"); p.add_argument("--legs"); p.add_argument("--response-file", dest="response_file"); p.add_argument("--response"); p.set_defaults(fn=cmd_log)
     p = sub.add_parser("list"); p.add_argument("--company", required=True); p.add_argument("--session", choices=["all", "current"], default="all"); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("sessions"); p.add_argument("--company", required=True); p.set_defaults(fn=cmd_sessions)
